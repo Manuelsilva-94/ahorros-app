@@ -85,11 +85,7 @@ export function useGoals() {
   }
 
   const shareGoal = async (goalId: string, email: string, canEdit: boolean) => {
-    // This would need a Cloud Function to lookup user by email
-    // For now, we'll store the email and resolve it later
-    const goalRef = doc(db, 'goals', goalId)
-    // In a real app, you'd lookup the userId from the email
-    // and add to sharedWith array
+    // TODO: Implement sharing with Cloud Functions to lookup user by email
     console.log('Share goal', goalId, 'with', email, 'canEdit:', canEdit)
   }
 
