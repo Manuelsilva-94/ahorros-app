@@ -1,9 +1,8 @@
 import { useMemo, useState, type CSSProperties } from 'react'
 import './App.css'
 import { useAuth } from './AuthContext'
-import { useGoals, useContributions } from './useFirestore'
+import { useGoals, useContributions, useUserSettings, type Goal } from './useFirestore'
 
-type LocalGoal = { id: string; name: string; target: number }
 type LocalContribution = { id: string; date: string; amount: number; note: string }
 
 function App() {
@@ -14,6 +13,8 @@ function App() {
     addGoal,
     updateGoal,
     deleteGoal,
+    shareGoal,
+    removeShare,
   } = useGoals()
   const {
     contributions,
@@ -22,6 +23,7 @@ function App() {
     updateContribution,
     deleteContribution,
   } = useContributions()
+  const { settings, updateSettings } = useUserSettings()
 
   const [screen, setScreen] = useState<'goals' | 'savings'>('goals')
   const [editingGoalId, setEditingGoalId] = useState<string | null>(null)
@@ -41,28 +43,20 @@ function App() {
     id: string
     name: string
   } | null>(null)
-  const [activeModal, setActiveModal] = useState<'addGoal' | 'addContribution' | null>(
+  const [activeModal, setActiveModal] = useState<'addGoal' | 'addContribution' | 'shareGoal' | 'settings' | null>(
     null
   )
+  const [sharingGoalId, setSharingGoalId] = useState<string | null>(null)
+  const [shareEmail, setShareEmail] = useState('')
+  const [shareCanEdit, setShareCanEdit] = useState(false)
+  const [editConservative, setEditConservative] = useState('')
+  const [editAmbitious, setEditAmbitious] = useState('')
 
   const totalSaved = useMemo(() => {
     return contributions.reduce((sum, item) => sum + item.amount, 0)
   }, [contributions])
 
-  const uniqueMonthsCount = useMemo(() => {
-    const months = new Set(contributions.map((item) => item.date?.slice(0, 7)))
-    return months.size
-  }, [contributions])
-
-  const averageMonthly = useMemo(() => {
-    if (!totalSaved || !uniqueMonthsCount) {
-      return 0
-    }
-    return totalSaved / uniqueMonthsCount
-  }, [totalSaved, uniqueMonthsCount])
-
-  const conservativeMonthly = averageMonthly ? averageMonthly * 0.75 : 200
-  const ambitiousMonthly = averageMonthly ? averageMonthly * 1.4 : 500
+  const { conservativeMonthly, ambitiousMonthly } = settings
 
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('es-AR', {
@@ -96,19 +90,20 @@ function App() {
     return `${years} ${years === 1 ? 'año' : 'años'} y ${remainingMonths} meses`
   }
 
-  const handleAddGoal = async (event: React.FormEvent<HTMLFormElement>) => {
+  const handleAddGoal = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const target = Number(newGoalTarget)
-    if (!newGoalName.trim() || Number.isNaN(target) || target <= 0) {
+    const name = newGoalName.trim()
+    if (!name || Number.isNaN(target) || target <= 0) {
       return
     }
-    await addGoal(newGoalName.trim(), target)
     setNewGoalName('')
     setNewGoalTarget('')
     setActiveModal(null)
+    addGoal(name, target)
   }
 
-  const handleAddContribution = async (event: React.FormEvent<HTMLFormElement>) => {
+  const handleAddContribution = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const amount = Number(newContributionAmount)
     if (Number.isNaN(amount) || amount <= 0) {
@@ -116,32 +111,34 @@ function App() {
     }
     const date = newContributionDate || new Date().toISOString().slice(0, 10)
     const note = newContributionNote.trim() || 'Aporte'
-    await addContribution(date, amount, note)
     setNewContributionAmount('')
     setNewContributionDate('')
     setNewContributionNote('')
     setActiveModal(null)
+    addContribution(date, amount, note)
   }
 
-  const startEditGoal = (goal: LocalGoal) => {
+  const startEditGoal = (goal: Goal) => {
     setEditingGoalId(goal.id)
     setEditGoalName(goal.name)
     setEditGoalTarget(String(goal.target))
   }
 
-  const handleUpdateGoal = async (event: React.FormEvent<HTMLFormElement>) => {
+  const handleUpdateGoal = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!editingGoalId) {
       return
     }
     const target = Number(editGoalTarget)
-    if (!editGoalName.trim() || Number.isNaN(target) || target <= 0) {
+    const name = editGoalName.trim()
+    if (!name || Number.isNaN(target) || target <= 0) {
       return
     }
-    await updateGoal(editingGoalId, { name: editGoalName.trim(), target })
+    const goalId = editingGoalId
     setEditingGoalId(null)
     setEditGoalName('')
     setEditGoalTarget('')
+    updateGoal(goalId, { name, target })
   }
 
   const handleCancelEdit = () => {
@@ -150,7 +147,53 @@ function App() {
     setEditGoalTarget('')
   }
 
-  const handleDeleteGoal = (goal: LocalGoal) => {
+  const startShareGoal = (goalId: string) => {
+    setSharingGoalId(goalId)
+    setShareEmail('')
+    setShareCanEdit(false)
+    setActiveModal('shareGoal')
+  }
+
+  const handleShareGoal = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!sharingGoalId || !shareEmail.trim()) {
+      return
+    }
+    const goalId = sharingGoalId
+    const email = shareEmail.trim()
+    const canEdit = shareCanEdit
+    setSharingGoalId(null)
+    setShareEmail('')
+    setShareCanEdit(false)
+    setActiveModal(null)
+    shareGoal(goalId, email, canEdit)
+  }
+
+  const handleRemoveShare = (goalId: string, email: string) => {
+    removeShare(goalId, email)
+  }
+
+  const openSettings = () => {
+    setEditConservative(String(settings.conservativeMonthly))
+    setEditAmbitious(String(settings.ambitiousMonthly))
+    setActiveModal('settings')
+  }
+
+  const handleSaveSettings = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const conservative = Number(editConservative)
+    const ambitious = Number(editAmbitious)
+    if (Number.isNaN(conservative) || conservative <= 0 || Number.isNaN(ambitious) || ambitious <= 0) {
+      return
+    }
+    setActiveModal(null)
+    updateSettings({
+      conservativeMonthly: conservative,
+      ambitiousMonthly: ambitious,
+    })
+  }
+
+  const handleDeleteGoal = (goal: Goal) => {
     setConfirmModal({ kind: 'goal', id: goal.id, name: goal.name })
   }
 
@@ -161,7 +204,7 @@ function App() {
     setEditContributionNote(item.note)
   }
 
-  const handleUpdateContribution = async (event: React.FormEvent<HTMLFormElement>) => {
+  const handleUpdateContribution = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!editingContributionId) {
       return
@@ -172,11 +215,12 @@ function App() {
     }
     const date = editContributionDate || new Date().toISOString().slice(0, 10)
     const note = editContributionNote.trim() || 'Aporte'
-    await updateContribution(editingContributionId, { amount, date, note })
+    const contribId = editingContributionId
     setEditingContributionId(null)
     setEditContributionAmount('')
     setEditContributionDate('')
     setEditContributionNote('')
+    updateContribution(contribId, { amount, date, note })
   }
 
   const handleCancelContributionEdit = () => {
@@ -190,22 +234,23 @@ function App() {
     setConfirmModal({ kind: 'contribution', id: item.id, name: item.note })
   }
 
-  const handleConfirmDelete = async () => {
+  const handleConfirmDelete = () => {
     if (!confirmModal) {
       return
     }
-    if (confirmModal.kind === 'goal') {
-      await deleteGoal(confirmModal.id)
-      if (editingGoalId === confirmModal.id) {
-        handleCancelEdit()
-      }
-    } else {
-      await deleteContribution(confirmModal.id)
-      if (editingContributionId === confirmModal.id) {
-        handleCancelContributionEdit()
-      }
+    const { kind, id } = confirmModal
+    if (editingGoalId === id) {
+      handleCancelEdit()
+    }
+    if (editingContributionId === id) {
+      handleCancelContributionEdit()
     }
     setConfirmModal(null)
+    if (kind === 'goal') {
+      deleteGoal(id)
+    } else {
+      deleteContribution(id)
+    }
   }
 
   // Show loading state
@@ -275,6 +320,11 @@ function App() {
             <img src={user.photoURL} alt="" className="user-avatar" />
           ) : null}
           <span className="user-name">{user.displayName || user.email}</span>
+          <button type="button" className="icon-button" onClick={openSettings} aria-label="Configuración">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+            </svg>
+          </button>
           <button type="button" className="ghost" onClick={signOut}>
             Salir
           </button>
@@ -330,38 +380,64 @@ function App() {
               const ringStyle = { '--progress': `${progress}%` } as CSSProperties
               const conservativeMonths = Math.ceil(remaining / conservativeMonthly)
               const ambitiousMonths = Math.ceil(remaining / ambitiousMonthly)
+              const isOwner = !goal.isSharedWithMe
+              const canEditGoal = isOwner || goal.canEdit
               return (
-                <article key={goal.id} className="goal-card">
+                <article key={goal.id} className={`goal-card ${goal.isSharedWithMe ? 'shared' : ''}`}>
                   <div className="goal-header">
                     <div>
                       <h2>{goal.name}</h2>
-                      <span className={complete ? 'badge done' : 'badge'}>
-                        {complete ? 'Completado' : `${progress.toFixed(0)}%`}
-                      </span>
+                      <div className="badge-row">
+                        <span className={complete ? 'badge done' : 'badge'}>
+                          {complete ? 'Completado' : `${progress.toFixed(0)}%`}
+                        </span>
+                        {goal.isSharedWithMe ? (
+                          <span className="badge shared">Compartido</span>
+                        ) : null}
+                      </div>
+                      {goal.isSharedWithMe && goal.ownerEmail ? (
+                        <span className="owner-info">De: {goal.ownerEmail}</span>
+                      ) : null}
                     </div>
                     <div className="goal-actions">
-                      <button
-                        type="button"
-                        className="icon-button"
-                        onClick={() => startEditGoal(goal)}
-                        aria-label={`Editar objetivo ${goal.name}`}
-                      >
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <path d="M4 17.25V20h2.75L17.8 8.95l-2.75-2.75L4 17.25z" />
-                          <path d="M20.7 7.04a1 1 0 0 0 0-1.41L18.37 3.3a1 1 0 0 0-1.41 0l-1.83 1.83 2.75 2.75 1.82-1.84z" />
-                        </svg>
-                      </button>
-                      <button
-                        type="button"
-                        className="icon-button danger"
-                        onClick={() => handleDeleteGoal(goal)}
-                        aria-label={`Eliminar objetivo ${goal.name}`}
-                      >
-                        <svg viewBox="0 0 24 24" aria-hidden="true">
-                          <path d="M6 7h12l-1 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 7z" />
-                          <path d="M9 4h6l1 2H8l1-2z" />
-                        </svg>
-                      </button>
+                      {isOwner ? (
+                        <button
+                          type="button"
+                          className="icon-button"
+                          onClick={() => startShareGoal(goal.id)}
+                          aria-label={`Compartir objetivo ${goal.name}`}
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M18 16c-.8 0-1.5.3-2 .8l-7-4.1c.1-.2.1-.5.1-.7s0-.5-.1-.7l7-4.1c.5.5 1.2.8 2 .8 1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3c0 .2 0 .5.1.7l-7 4.1c-.5-.5-1.2-.8-2-.8-1.7 0-3 1.3-3 3s1.3 3 3 3c.8 0 1.5-.3 2-.8l7 4.1c-.1.2-.1.5-.1.7 0 1.7 1.3 3 3 3s3-1.3 3-3-1.3-3-3-3z" />
+                          </svg>
+                        </button>
+                      ) : null}
+                      {canEditGoal ? (
+                        <button
+                          type="button"
+                          className="icon-button"
+                          onClick={() => startEditGoal(goal)}
+                          aria-label={`Editar objetivo ${goal.name}`}
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M4 17.25V20h2.75L17.8 8.95l-2.75-2.75L4 17.25z" />
+                            <path d="M20.7 7.04a1 1 0 0 0 0-1.41L18.37 3.3a1 1 0 0 0-1.41 0l-1.83 1.83 2.75 2.75 1.82-1.84z" />
+                          </svg>
+                        </button>
+                      ) : null}
+                      {isOwner ? (
+                        <button
+                          type="button"
+                          className="icon-button danger"
+                          onClick={() => handleDeleteGoal(goal)}
+                          aria-label={`Eliminar objetivo ${goal.name}`}
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M6 7h12l-1 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 7z" />
+                            <path d="M9 4h6l1 2H8l1-2z" />
+                          </svg>
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                   <div className="goal-content">
@@ -387,14 +463,14 @@ function App() {
                     <div className="forecast-row">
                       <div>
                         <span className="forecast-label">Conservador</span>
-                        <strong>{formatDuration(conservativeMonths)}</strong>
+                        <strong>{formatDuration(conservativeMonths)}&nbsp;</strong>
                         <span className="muted">
                           {formatCurrency(conservativeMonthly)}/mes
                         </span>
                       </div>
                       <div>
                         <span className="forecast-label">Audaz</span>
-                        <strong>{formatDuration(ambitiousMonths)}</strong>
+                        <strong>{formatDuration(ambitiousMonths)}&nbsp;</strong>
                         <span className="muted">
                           {formatCurrency(ambitiousMonthly)}/mes
                         </span>
@@ -430,6 +506,29 @@ function App() {
                         </button>
                       </div>
                     </form>
+                  ) : null}
+                  {isOwner && goal.shares && goal.shares.length > 0 ? (
+                    <div className="shared-with">
+                      <span className="label">Compartido con</span>
+                      <ul className="shared-list">
+                        {goal.shares.map((share) => (
+                          <li key={share.email}>
+                            <span>{share.email}</span>
+                            <span className="share-permission">
+                              {share.canEdit ? 'Puede editar' : 'Solo ver'}
+                            </span>
+                            <button
+                              type="button"
+                              className="remove-share"
+                              onClick={() => handleRemoveShare(goal.id, share.email)}
+                              aria-label={`Dejar de compartir con ${share.email}`}
+                            >
+                              ×
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   ) : null}
                 </article>
               )
@@ -680,6 +779,94 @@ function App() {
                   Cancelar
                 </button>
                 <button type="submit">Guardar aporte</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {activeModal === 'shareGoal' ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-card">
+            <h3>Compartir objetivo</h3>
+            <form className="form-card" onSubmit={handleShareGoal}>
+              <label>
+                Email
+                <input
+                  type="email"
+                  placeholder="persona@ejemplo.com"
+                  value={shareEmail}
+                  onChange={(event) => setShareEmail(event.target.value)}
+                  required
+                />
+              </label>
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={shareCanEdit}
+                  onChange={(event) => setShareCanEdit(event.target.checked)}
+                />
+                <span>Puede editar</span>
+              </label>
+              <p className="share-help">
+                Si no marcás esta opción, solo podrá ver el objetivo.
+              </p>
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => setActiveModal(null)}
+                >
+                  Cancelar
+                </button>
+                <button type="submit">Compartir</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {activeModal === 'settings' ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-card">
+            <h3>Configuración de ahorro</h3>
+            <p className="settings-description">
+              Configurá cuánto planeás ahorrar por mes para calcular las proyecciones.
+            </p>
+            <form className="form-card" onSubmit={handleSaveSettings}>
+              <label>
+                Ahorro conservador (mensual)
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="200"
+                  value={editConservative}
+                  onChange={(event) => setEditConservative(event.target.value)}
+                  required
+                />
+              </label>
+              <label>
+                Ahorro audaz (mensual)
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="500"
+                  value={editAmbitious}
+                  onChange={(event) => setEditAmbitious(event.target.value)}
+                  required
+                />
+              </label>
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => setActiveModal(null)}
+                >
+                  Cancelar
+                </button>
+                <button type="submit">Guardar</button>
               </div>
             </form>
           </div>

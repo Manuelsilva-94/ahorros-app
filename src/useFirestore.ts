@@ -8,20 +8,30 @@ import {
   onSnapshot,
   query,
   where,
-  orderBy,
+  arrayUnion,
+  arrayRemove,
   serverTimestamp,
   type Timestamp,
 } from 'firebase/firestore'
 import { db } from './firebase'
 import { useAuth } from './AuthContext'
 
+export type Share = {
+  email: string
+  canEdit: boolean
+}
+
 export type Goal = {
   id: string
   name: string
   target: number
   ownerId: string
-  sharedWith: { userId: string; canEdit: boolean }[]
+  ownerEmail: string
+  sharedWithEmails: string[]
+  shares: Share[]
   createdAt: Timestamp
+  isSharedWithMe?: boolean
+  canEdit?: boolean
 }
 
 export type Contribution = {
@@ -35,35 +45,78 @@ export type Contribution = {
 
 export function useGoals() {
   const { user } = useAuth()
-  const [goals, setGoals] = useState<Goal[]>([])
+  const [ownedGoals, setOwnedGoals] = useState<Goal[]>([])
+  const [sharedGoals, setSharedGoals] = useState<Goal[]>([])
   const [loading, setLoading] = useState(true)
 
+  // Query goals owned by user
   useEffect(() => {
     if (!user) {
-      setGoals([])
-      setLoading(false)
+      setOwnedGoals([])
       return
     }
 
-    // Query goals where user is owner OR shared with user
     const goalsRef = collection(db, 'goals')
-    const q = query(
-      goalsRef,
-      where('ownerId', '==', user.uid),
-      orderBy('createdAt', 'desc')
-    )
+    const q = query(goalsRef, where('ownerId', '==', user.uid))
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const goalsData = snapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
+        isSharedWithMe: false,
+        canEdit: true,
       })) as Goal[]
-      setGoals(goalsData)
+      goalsData.sort((a, b) => {
+        const aTime = a.createdAt?.toMillis?.() || 0
+        const bTime = b.createdAt?.toMillis?.() || 0
+        return bTime - aTime
+      })
+      setOwnedGoals(goalsData)
       setLoading(false)
     })
 
     return unsubscribe
   }, [user])
+
+  // Query goals shared with user
+  useEffect(() => {
+    if (!user?.email) {
+      setSharedGoals([])
+      return
+    }
+
+    const goalsRef = collection(db, 'goals')
+    const q = query(
+      goalsRef,
+      where('sharedWithEmails', 'array-contains', user.email.toLowerCase())
+    )
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const goalsData = snapshot.docs.map((doc) => {
+        const data = doc.data()
+        const shares = (data.shares || []) as Share[]
+        const userShare = shares.find(
+          (s) => s.email.toLowerCase() === user.email?.toLowerCase()
+        )
+        return {
+          id: doc.id,
+          ...data,
+          isSharedWithMe: true,
+          canEdit: userShare?.canEdit || false,
+        }
+      }) as Goal[]
+      goalsData.sort((a, b) => {
+        const aTime = a.createdAt?.toMillis?.() || 0
+        const bTime = b.createdAt?.toMillis?.() || 0
+        return bTime - aTime
+      })
+      setSharedGoals(goalsData)
+    })
+
+    return unsubscribe
+  }, [user])
+
+  const goals = [...ownedGoals, ...sharedGoals]
 
   const addGoal = async (name: string, target: number) => {
     if (!user) return
@@ -71,7 +124,9 @@ export function useGoals() {
       name,
       target,
       ownerId: user.uid,
-      sharedWith: [],
+      ownerEmail: user.email || '',
+      sharedWithEmails: [],
+      shares: [],
       createdAt: serverTimestamp(),
     })
   }
@@ -85,11 +140,35 @@ export function useGoals() {
   }
 
   const shareGoal = async (goalId: string, email: string, canEdit: boolean) => {
-    // TODO: Implement sharing with Cloud Functions to lookup user by email
-    console.log('Share goal', goalId, 'with', email, 'canEdit:', canEdit)
+    const normalizedEmail = email.toLowerCase().trim()
+    const goalRef = doc(db, 'goals', goalId)
+    
+    // Add email to sharedWithEmails array and shares array
+    await updateDoc(goalRef, {
+      sharedWithEmails: arrayUnion(normalizedEmail),
+      shares: arrayUnion({ email: normalizedEmail, canEdit }),
+    })
   }
 
-  return { goals, loading, addGoal, updateGoal, deleteGoal, shareGoal }
+  const removeShare = async (goalId: string, email: string) => {
+    const normalizedEmail = email.toLowerCase().trim()
+    const goalRef = doc(db, 'goals', goalId)
+    
+    // First get the current shares to find the exact object to remove
+    const goal = ownedGoals.find((g) => g.id === goalId)
+    const shareToRemove = goal?.shares?.find(
+      (s) => s.email.toLowerCase() === normalizedEmail
+    )
+    
+    if (shareToRemove) {
+      await updateDoc(goalRef, {
+        sharedWithEmails: arrayRemove(normalizedEmail),
+        shares: arrayRemove(shareToRemove),
+      })
+    }
+  }
+
+  return { goals, loading, addGoal, updateGoal, deleteGoal, shareGoal, removeShare }
 }
 
 export function useContributions() {
@@ -105,17 +184,18 @@ export function useContributions() {
     }
 
     const contributionsRef = collection(db, 'contributions')
-    const q = query(
-      contributionsRef,
-      where('ownerId', '==', user.uid),
-      orderBy('createdAt', 'desc')
-    )
+    const q = query(contributionsRef, where('ownerId', '==', user.uid))
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const contributionsData = snapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
       })) as Contribution[]
+      contributionsData.sort((a, b) => {
+        const aTime = a.createdAt?.toMillis?.() || 0
+        const bTime = b.createdAt?.toMillis?.() || 0
+        return bTime - aTime
+      })
       setContributions(contributionsData)
       setLoading(false)
     })
@@ -146,4 +226,57 @@ export function useContributions() {
   }
 
   return { contributions, loading, addContribution, updateContribution, deleteContribution }
+}
+
+export type UserSettings = {
+  conservativeMonthly: number
+  ambitiousMonthly: number
+}
+
+const DEFAULT_SETTINGS: UserSettings = {
+  conservativeMonthly: 200,
+  ambitiousMonthly: 500,
+}
+
+export function useUserSettings() {
+  const { user } = useAuth()
+  const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!user) {
+      setSettings(DEFAULT_SETTINGS)
+      setLoading(false)
+      return
+    }
+
+    const settingsRef = doc(db, 'userSettings', user.uid)
+
+    const unsubscribe = onSnapshot(settingsRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data() as UserSettings
+        setSettings({
+          conservativeMonthly: data.conservativeMonthly || DEFAULT_SETTINGS.conservativeMonthly,
+          ambitiousMonthly: data.ambitiousMonthly || DEFAULT_SETTINGS.ambitiousMonthly,
+        })
+      } else {
+        setSettings(DEFAULT_SETTINGS)
+      }
+      setLoading(false)
+    })
+
+    return unsubscribe
+  }, [user])
+
+  const updateSettings = async (newSettings: Partial<UserSettings>) => {
+    if (!user) return
+    const settingsRef = doc(db, 'userSettings', user.uid)
+    await updateDoc(settingsRef, newSettings).catch(async () => {
+      // Document doesn't exist, create it
+      const { setDoc } = await import('firebase/firestore')
+      await setDoc(settingsRef, { ...DEFAULT_SETTINGS, ...newSettings })
+    })
+  }
+
+  return { settings, loading, updateSettings }
 }
